@@ -178,9 +178,13 @@
 <span class="kn">import</span> <span class="nn">hashlib</span>
 <span class="kn">import</span> <span class="nn">json</span>
 <span class="kn">import</span> <span class="nn">logging</span>
+<span class="kn">import</span> <span class="nn">threading</span>
 <span class="kn">from</span> <span class="nn">typing</span> <span class="k">import</span> <span class="n">Mapping</span>
 
+<span class="kn">import</span> <span class="nn">vineyard</span>
+
 <span class="kn">from</span> <span class="nn">graphscope.client.session</span> <span class="k">import</span> <span class="n">get_session_by_id</span>
+<span class="kn">from</span> <span class="nn">graphscope.config</span> <span class="k">import</span> <span class="n">GSConfig</span> <span class="k">as</span> <span class="n">gs_config</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.dag_utils</span> <span class="k">import</span> <span class="n">add_column</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.dag_utils</span> <span class="k">import</span> <span class="n">copy_graph</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.dag_utils</span> <span class="k">import</span> <span class="n">create_graph</span>
@@ -193,13 +197,14 @@
 <span class="kn">from</span> <span class="nn">graphscope.framework.errors</span> <span class="k">import</span> <span class="n">check_argument</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.graph_schema</span> <span class="k">import</span> <span class="n">GraphSchema</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">b_to_attr</span>
+<span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">data_type_to_cpp</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">decode_dataframe</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">decode_numpy</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">i_to_attr</span>
+<span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">normalize_data_type_str</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">s_to_attr</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">transform_labeled_vertex_property_data_selector</span>
 <span class="kn">from</span> <span class="nn">graphscope.framework.utils</span> <span class="k">import</span> <span class="n">transform_vertex_range</span>
-<span class="kn">from</span> <span class="nn">graphscope.framework.vineyard_object</span> <span class="k">import</span> <span class="n">VineyardObject</span>
 <span class="kn">from</span> <span class="nn">graphscope.proto</span> <span class="k">import</span> <span class="n">types_pb2</span>
 <span class="kn">from</span> <span class="nn">graphscope.proto.graph_def_pb2</span> <span class="k">import</span> <span class="n">GraphDef</span>
 
@@ -251,7 +256,7 @@
 <span class="sd">                    - :class:`GraphDef`</span>
 <span class="sd">                    - :class:`nx.Graph`</span>
 <span class="sd">                    - :class:`Graph`</span>
-<span class="sd">                    - :class:`VineyardObject`</span>
+<span class="sd">                    - :class:`vineyard.Object`, :class:`vineyard.ObjectId` or :class:`vineyard.ObjectName`</span>
 <span class="sd">        &quot;&quot;&quot;</span>
 
         <span class="c1"># Don&#39;t import the :code:`NXGraph` in top-level statments to improve the</span>
@@ -268,6 +273,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_session_id</span> <span class="o">=</span> <span class="n">session_id</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_detached</span> <span class="o">=</span> <span class="kc">False</span>
 
+        <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_list</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_learning_instance_list</span> <span class="o">=</span> <span class="p">[]</span>
 
@@ -277,7 +283,9 @@
             <span class="n">graph_def</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_nx_graph</span><span class="p">(</span><span class="n">incoming_data</span><span class="p">)</span>
         <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">incoming_data</span><span class="p">,</span> <span class="n">Graph</span><span class="p">):</span>
             <span class="n">graph_def</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_copy_from</span><span class="p">(</span><span class="n">incoming_data</span><span class="p">)</span>
-        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">incoming_data</span><span class="p">,</span> <span class="n">VineyardObject</span><span class="p">):</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span>
+            <span class="n">incoming_data</span><span class="p">,</span> <span class="p">(</span><span class="n">vineyard</span><span class="o">.</span><span class="n">Object</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectID</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectName</span><span class="p">)</span>
+        <span class="p">):</span>
             <span class="n">graph_def</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard</span><span class="p">(</span><span class="n">incoming_data</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
@@ -292,7 +300,14 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">get_schema_from_def</span><span class="p">(</span><span class="n">graph_def</span><span class="o">.</span><span class="n">schema_def</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_schema_path</span> <span class="o">=</span> <span class="n">graph_def</span><span class="o">.</span><span class="n">schema_path</span>
             <span class="c1"># init saved_signature (must be after init schema)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_saved_signature</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">signature</span></div>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_saved_signature</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">signature</span>
+
+            <span class="c1"># create gremlin server pod asynchronously</span>
+            <span class="k">if</span> <span class="n">gs_config</span><span class="o">.</span><span class="n">initializing_interactive_engine</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span>
+                    <span class="n">target</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_launch_interactive_instance_impl</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="p">()</span>
+                <span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span><span class="o">.</span><span class="n">start</span><span class="p">()</span></div>
 
     <span class="k">def</span> <span class="nf">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="c1"># cleanly ignore all exceptions, cause session may already closed / destroyed.</span>
@@ -312,6 +327,15 @@
         <span class="k">for</span> <span class="n">instance</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_learning_instance_list</span><span class="p">:</span>
             <span class="n">instance</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_learning_instance_list</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_launch_interactive_instance_impl</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">sess</span> <span class="o">=</span> <span class="n">get_session_by_id</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
+            <span class="n">sess</span><span class="o">.</span><span class="n">gremlin</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+        <span class="k">except</span><span class="p">:</span>  <span class="c1"># noqa: E722</span>
+            <span class="c1"># Record error msg in `InteractiveQuery` when launching failed.</span>
+            <span class="c1"># Unexpect and suppress all exceptions here.</span>
+            <span class="k">pass</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span> <span class="nf">op</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -359,18 +383,24 @@
         <span class="p">)</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
 
     <span class="nd">@property</span>
-    <span class="k">def</span> <span class="nf">template_sigature</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">template_str</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_key</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;graph should be registered in remote.&quot;</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span>
-            <span class="s2">&quot;</span><span class="si">{}</span><span class="s2">.</span><span class="si">{}</span><span class="s2">.</span><span class="si">{}</span><span class="s2">.</span><span class="si">{}</span><span class="s2">.</span><span class="si">{}</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_graph_type</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">oid_type</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">vid_type</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">vdata_type</span><span class="p">,</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">edata_type</span><span class="p">,</span>
-            <span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
-        <span class="p">)</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
+        <span class="n">graph_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph_type</span>
+        <span class="c1"># transform str/string to std::string</span>
+        <span class="n">oid_type</span> <span class="o">=</span> <span class="n">normalize_data_type_str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">oid_type</span><span class="p">)</span>
+        <span class="n">vid_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">vid_type</span>
+        <span class="n">vdata_type</span> <span class="o">=</span> <span class="n">data_type_to_cpp</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">vdata_type</span><span class="p">)</span>
+        <span class="n">edata_type</span> <span class="o">=</span> <span class="n">data_type_to_cpp</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_schema</span><span class="o">.</span><span class="n">edata_type</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">graph_type</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">ARROW_PROPERTY</span><span class="p">:</span>
+            <span class="n">template</span> <span class="o">=</span> <span class="n">f</span><span class="s2">&quot;vineyard::ArrowFragment&lt;</span><span class="si">{oid_type}</span><span class="s2">,</span><span class="si">{vid_type}</span><span class="s2">&gt;&quot;</span>
+        <span class="k">elif</span> <span class="n">graph_type</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">ARROW_PROJECTED</span><span class="p">:</span>
+            <span class="n">template</span> <span class="o">=</span> <span class="n">f</span><span class="s2">&quot;gs::ArrowProjectedFragment&lt;</span><span class="si">{oid_type}</span><span class="s2">,</span><span class="si">{vid_type}</span><span class="s2">,</span><span class="si">{vdata_type}</span><span class="s2">,</span><span class="si">{edata_type}</span><span class="s2">&gt;&quot;</span>
+        <span class="k">elif</span> <span class="n">graph_type</span> <span class="o">==</span> <span class="n">types_pb2</span><span class="o">.</span><span class="n">DYNAMIC_PROJECTED</span><span class="p">:</span>
+            <span class="n">template</span> <span class="o">=</span> <span class="n">f</span><span class="s2">&quot;gs::DynamicProjectedFragment&lt;</span><span class="si">{vdata_type}</span><span class="s2">,</span><span class="si">{edata_type}</span><span class="s2">&gt;&quot;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">f</span><span class="s2">&quot;Unsupported graph type: </span><span class="si">{graph_type}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">template</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span> <span class="nf">vineyard_id</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -401,8 +431,11 @@
     <span class="k">def</span> <span class="nf">loaded</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_key</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 
+    <span class="k">def</span> <span class="nf">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">f</span><span class="s2">&quot;graphscope.Graph   </span><span class="si">{self.template_str}</span><span class="s2">&quot;</span>
+
     <span class="k">def</span> <span class="nf">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">return</span> <span class="s2">&quot;&lt;grape.Graph &#39;</span><span class="si">%s</span><span class="s2">&#39;&gt;&quot;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">_key</span>
+        <span class="k">return</span> <span class="n">f</span><span class="s2">&quot;graphscope.Graph</span><span class="se">\n</span><span class="s2">type: {self.template_str.split(&#39;&lt;&#39;)[0]}</span><span class="se">\n\n</span><span class="s2">{str(self._schema)}&quot;</span>
 
 <div class="viewcode-block" id="Graph.unload"><a class="viewcode-back" href="../../../reference/graph.html#graphscope.framework.graph.Graph.unload">[docs]</a>    <span class="k">def</span> <span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="sd">&quot;&quot;&quot;Unload this graph from graphscope engine.&quot;&quot;&quot;</span>
@@ -410,6 +443,17 @@
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;The graph is not registered in remote.&quot;</span><span class="p">)</span>
         <span class="c1"># close interactive instances first</span>
         <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()</span>
+            <span class="p">):</span>
+                <span class="c1"># join raises a RuntimeError if an attempt is made to join the current thread.</span>
+                <span class="c1"># this exception occurs when a object collected by gc mechanism contains a running thread.</span>
+                <span class="k">if</span> <span class="p">(</span>
+                    <span class="n">threading</span><span class="o">.</span><span class="n">current_thread</span><span class="p">()</span>
+                    <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span>
+                <span class="p">):</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_interactive_instance_launching_thread</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_close_interactive_instances</span><span class="p">()</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="s2">&quot;Failed to close interactive instances: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">e</span><span class="p">)</span>
@@ -648,20 +692,24 @@
         <span class="sd">&quot;&quot;&quot;Load a graph from a already existed vineyard graph.</span>
 
 <span class="sd">        Args:</span>
-<span class="sd">            vineyard_object (:class:`VineyardObject`): vineyard object, which contains a graph.</span>
+<span class="sd">            vineyard_object (:class:`vineyard.Object`, :class:`vineyard.ObjectID`</span>
+<span class="sd">                            or :class:`vineyard.ObjectName`): vineyard object,</span>
+<span class="sd">                            which represents a graph.</span>
 
 <span class="sd">        Returns:</span>
 <span class="sd">            A graph_def.</span>
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">if</span> <span class="n">vineyard_object</span><span class="o">.</span><span class="n">object_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard_id</span><span class="p">(</span><span class="n">vineyard_object</span><span class="o">.</span><span class="n">object_id</span><span class="p">)</span>
-        <span class="k">elif</span> <span class="n">vineyard_object</span><span class="o">.</span><span class="n">object_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard_name</span><span class="p">(</span><span class="n">vineyard_object</span><span class="o">.</span><span class="n">object_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">vineyard_object</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">Object</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard_id</span><span class="p">(</span><span class="n">vineyard_object</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">vineyard_object</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectID</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard_id</span><span class="p">(</span><span class="n">vineyard_object</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">vineyard_object</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectName</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_from_vineyard_name</span><span class="p">(</span><span class="n">vineyard_object</span><span class="p">)</span>
 
     <span class="k">def</span> <span class="nf">_from_vineyard_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">vineyard_id</span><span class="p">):</span>
         <span class="n">config</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">IS_FROM_VINEYARD_ID</span><span class="p">]</span> <span class="o">=</span> <span class="n">b_to_attr</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
-        <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">VINEYARD_ID</span><span class="p">]</span> <span class="o">=</span> <span class="n">i_to_attr</span><span class="p">(</span><span class="n">vineyard_id</span><span class="p">)</span>
+        <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">VINEYARD_ID</span><span class="p">]</span> <span class="o">=</span> <span class="n">i_to_attr</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">vineyard_id</span><span class="p">))</span>
         <span class="c1"># FIXME(hetao) hardcode oid/vid type for codegen, when loading from vineyard</span>
         <span class="c1">#</span>
         <span class="c1"># the metadata should be retrived from vineyard</span>
@@ -674,7 +722,7 @@
     <span class="k">def</span> <span class="nf">_from_vineyard_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">vineyard_name</span><span class="p">):</span>
         <span class="n">config</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">IS_FROM_VINEYARD_ID</span><span class="p">]</span> <span class="o">=</span> <span class="n">b_to_attr</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
-        <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">VINEYARD_NAME</span><span class="p">]</span> <span class="o">=</span> <span class="n">s_to_attr</span><span class="p">(</span><span class="n">vineyard_name</span><span class="p">)</span>
+        <span class="n">config</span><span class="p">[</span><span class="n">types_pb2</span><span class="o">.</span><span class="n">VINEYARD_NAME</span><span class="p">]</span> <span class="o">=</span> <span class="n">s_to_attr</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">vineyard_name</span><span class="p">))</span>
         <span class="c1"># FIXME(hetao) hardcode oid/vid type for codegen, when loading from vineyard</span>
         <span class="c1">#</span>
         <span class="c1"># the metadata should be retrived from vineyard</span>
@@ -775,9 +823,29 @@
             <span class="n">deployment</span><span class="o">=</span><span class="n">deployment</span><span class="p">,</span>
             <span class="n">hosts</span><span class="o">=</span><span class="n">hosts</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span>
-            <span class="n">sess</span><span class="o">.</span><span class="n">session_id</span><span class="p">,</span> <span class="n">VineyardObject</span><span class="p">(</span><span class="n">object_id</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectID</span><span class="p">(</span><span class="n">graph_id</span><span class="p">)))</span>
-        <span class="p">)</span></div></div>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">sess</span><span class="o">.</span><span class="n">session_id</span><span class="p">,</span> <span class="n">vineyard</span><span class="o">.</span><span class="n">ObjectID</span><span class="p">(</span><span class="n">graph_id</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="Graph.draw"><a class="viewcode-back" href="../../../reference/graph.html#graphscope.framework.graph.Graph.draw">[docs]</a>    <span class="k">def</span> <span class="nf">draw</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">hop</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Visualize the graph data in the result cell when the draw functions are invoked</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            vertices (list): selected vertices.</span>
+<span class="sd">            hop (int): draw induced subgraph with hop extension. Defaults to 1.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            A GraphModel.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="kn">from</span> <span class="nn">ipygraphin</span> <span class="k">import</span> <span class="n">GraphModel</span>
+
+        <span class="n">sess</span> <span class="o">=</span> <span class="n">get_session_by_id</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
+        <span class="n">interactive_query</span> <span class="o">=</span> <span class="n">sess</span><span class="o">.</span><span class="n">gremlin</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+
+        <span class="n">graph</span> <span class="o">=</span> <span class="n">GraphModel</span><span class="p">()</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">queryGraphData</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">hop</span><span class="p">,</span> <span class="n">interactive_query</span><span class="p">)</span>
+
+        <span class="c1"># listen on the 1~2 hops operation of node</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">on_msg</span><span class="p">(</span><span class="n">graph</span><span class="o">.</span><span class="n">queryNeighbor</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">graph</span></div></div>
 </pre></div>
 
            </div>

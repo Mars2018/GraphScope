@@ -285,7 +285,8 @@ Valid options are NodePort, and LoadBalancer. Defaults to NodePort.</p></li>
 <li><p><strong>k8s_gie_graph_manager_cpu</strong> (<em>float</em><em>, </em><em>optional</em>) – Minimum number of CPU cores request for graphmanager container. Defaults to 1.0.</p></li>
 <li><p><strong>k8s_gie_graph_manager_mem</strong> (<em>str</em><em>, </em><em>optional</em>) – Minimum number of memory request for graphmanager container. Defaults to ‘4Gi’.</p></li>
 <li><p><strong>k8s_volumes</strong> (<em>dict</em><em>, </em><em>optional</em>) – <p>A dict of k8s volume which represents a directory containing data, accessible to the
-containers in a pod. Defaults to {}. Only ‘hostPath’ supported yet. For example, we can mount host path with:</p>
+containers in a pod. Defaults to {}.</p>
+<p>For example, you can mount host path with:</p>
 <dl>
 <dt>k8s_volumes = {</dt><dd><dl>
 <dt>“my-data”: {</dt><dd><p>“type”: “hostPath”,
@@ -306,6 +307,30 @@ containers in a pod. Defaults to {}. Only ‘hostPath’ supported yet. For exam
 <blockquote>
 <div><p>”mountPath”: “&lt;path2&gt;”</p>
 </div></blockquote>
+<p>}</p>
+</div></blockquote>
+<p>]</p>
+</dd>
+</dl>
+<p>}</p>
+</dd>
+</dl>
+<p>}</p>
+<p>Or you can mount PVC with:</p>
+<dl>
+<dt>k8s_volumes = {</dt><dd><dl>
+<dt>“my-data”: {</dt><dd><p>“type”: “persistentVolumeClaim”,
+“field”: {</p>
+<blockquote>
+<div><p>”claimName”: “your-pvc-name”</p>
+</div></blockquote>
+<p>},
+“mounts”: [</p>
+<blockquote>
+<div><dl class="simple">
+<dt>{</dt><dd><p>“mountPath”: “&lt;path1&gt;”</p>
+</dd>
+</dl>
 <p>}</p>
 </div></blockquote>
 <p>]</p>
@@ -338,12 +363,7 @@ Also, after seconds of client disconnect, coordinator will clean up this graphsc
 Defaults to 600.</p></li>
 <li><p><strong>k8s_waiting_for_delete</strong> (<em>bool</em><em>, </em><em>optional</em>) – Waiting for service delete or not. Defaults to False.</p></li>
 <li><p><strong>**kw</strong> (<em>dict</em><em>, </em><em>optional</em>) – <p>Other optional parameters will be put to <code class="code docutils literal notranslate"><span class="pre">**kw</span></code>.
-- k8s_minikube_vm_driver (bool, optional):</p>
-<blockquote>
-<div><p>If your kubernetes cluster deployed on inner virtual machine
-(such as minikube with param –vm-driver is not None), you can specify
-<code class="code docutils literal notranslate"><span class="pre">k8s_minikube_vm_driver</span></code> is <code class="code docutils literal notranslate"><span class="pre">True</span></code>.</p>
-</div></blockquote>
+- k8s_minikube_vm_driver: Deprecated.</p>
 <ul>
 <li><dl class="simple">
 <dt>k8s_client_config (dict, optional):</dt><dd><p>Provide configurable parameters for connecting to remote k8s,
@@ -407,11 +427,27 @@ install self as a default session.</p>
 
 <dl class="py method">
 <dt id="graphscope.Session.gremlin">
-<code class="sig-name descname">gremlin</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">graph</span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/graphscope/client/session.html#Session.gremlin"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#graphscope.Session.gremlin" title="Permalink to this definition">¶</a></dt>
+<code class="sig-name descname">gremlin</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">graph</span></em>, <em class="sig-param"><span class="n">engine_params</span><span class="o">=</span><span class="default_value">None</span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/graphscope/client/session.html#Session.gremlin"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#graphscope.Session.gremlin" title="Permalink to this definition">¶</a></dt>
 <dd><p>Get a interactive engine handler to execute gremlin queries.</p>
+<p>Note that this method will be executed implicitly when a property graph created
+and cache a instance of InteractiveQuery in session if <cite>initializing_interactive_engine</cite>
+is True. If you want to create a new instance under the same graph by different params,
+you should close the instance first.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="c1"># close and recreate InteractiveQuery.</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">interactive_query</span> <span class="o">=</span> <span class="n">sess</span><span class="o">.</span><span class="n">gremlin</span><span class="p">(</span><span class="n">g</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">interactive_query</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">interactive_query</span> <span class="o">=</span> <span class="n">sess</span><span class="o">.</span><span class="n">gremlin</span><span class="p">(</span><span class="n">g</span><span class="p">,</span> <span class="n">engine_params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;xxx&quot;</span><span class="p">:</span><span class="s2">&quot;xxx&quot;</span><span class="p">})</span>
+</pre></div>
+</div>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters</dt>
-<dd class="field-odd"><p><strong>graph</strong> – <code class="xref py py-class docutils literal notranslate"><span class="pre">Graph</span></code></p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>graph</strong> (<code class="xref py py-class docutils literal notranslate"><span class="pre">Graph</span></code>) – Use the graph to create interactive instance.</p></li>
+<li><p><strong>engine_params</strong> (<em>dict</em><em>, </em><em>optional</em>) – Configure startup parameters of interactive engine.
+You can also configure this param by <cite>graphscope.set_option(engine_params={})</cite>.
+See a list of configurable keys in
+<cite>interactive_engine/deploy/docker/dockerfile/executor.vineyard.properties</cite></p></li>
+</ul>
 </dd>
 <dt class="field-even">Raises</dt>
 <dd class="field-even"><p><strong>InvalidArgumentError</strong> – <code class="code docutils literal notranslate"><span class="pre">graph</span></code> is not a property graph or unloaded.</p>
